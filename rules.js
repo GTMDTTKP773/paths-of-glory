@@ -1900,7 +1900,14 @@ function get_sr_destinations(unit) {
             if ([ITALY, FRANCE, GREECE, ROMANIA, SERBIA, US, BELGIUM].includes(data.pieces[unit].nation))
                 set_delete(destinations, d)
         }
+        //only NE army could be SR into NE
+        if(is_neareast_space(d)===true &&data.pieces[unit].type===ARMY
+            && (!data.pieces[unit].neareast||game.ne_armies_placed_outside_neareast.includes(unit))){
+            set_delete(all_destinations,d)
+        }
     }
+
+
 
     // 5.7.4 - If the Allies are not at Total War, no German Armies may SR to Trent, Villach, or Trieste
     if (game.ap.commitment !== COMMITMENT_TOTAL && data.pieces[unit].nation === GERMANY && data.pieces[unit].type === ARMY) {
@@ -5377,10 +5384,11 @@ states.attrition_phase = {
         set_delete(game.attrition[active_faction()].spaces, s)
         log(`Flipped control of ${space_name(s)}`)
         set_control(s, other_faction(active_faction()))
-
+        //attrition will not set trench to 0, It will simply capture it
         if (get_trench_level(s, active_faction()) > 0) {
-            log(`Removed trench in ${space_name(s)}`)
-            set_trench_level(s, 0, active_faction())
+            log(`Captured trench in ${space_name(s)}`)
+            //set_trench_level(s, 0, active_faction())
+            capture_trench(s,active_faction())
         }
 
         if (game.attrition[active_faction()].spaces.length === 0 && game.attrition[active_faction()].pieces.length === 0) {
