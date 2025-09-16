@@ -1176,7 +1176,7 @@ function roll_mandated_offensives() {
     }
 
     log(`Mandated offensives:`)
-    log(`CP: ${fmt_roll(cp_roll, cp_drm)} -> ${nation_name(cp_mo)}`)
+    log(`CP: fmt_roll(cp_roll, cp_drm) -> ${nation_name(cp_mo)}`)
     log(`AP: W${ap_roll} -> ${nation_name(ap_mo)}`)
     log_event_for_rollback("Rolled Mandated Offensives")
 
@@ -1198,6 +1198,17 @@ function all_capitals_occupied(nation) {
         }
     }
     return true
+}
+
+function any_capitals_occupied(nation) {
+    const capitals = get_capitals(nation)
+    const faction = data.spaces[capitals[0]].faction
+    for (let c of capitals) {
+        if (!is_controlled_by(c, faction)) {
+            return true
+        }
+    }
+    return false
 }
 
 function satisfies_mo(mo, attackers, defenders, space) {
@@ -1497,10 +1508,8 @@ states.action_phase = {
             view.prompt += ` You must play "Guns of August"!`
             gen_card_menu(GUNS_OF_AUGUST, true)
         } else {
-            const french_mutiny_active = (game.events.french_mutiny > 0 && game[active_faction()].mo === FRANCE)
-            if (player_actions.length === 5 && game[active_faction()].mo !== NONE && !french_mutiny_active)
+            if (player_actions.length === 5 && game[active_faction()].mo !== NONE)
                 view.prompt += ` Final round for ${nation_name(game[active_faction()].mo)} mandated offensive!`
-
             for(let card of player_hand) {
                 gen_card_menu(card)
             }
@@ -1900,14 +1909,7 @@ function get_sr_destinations(unit) {
             if ([ITALY, FRANCE, GREECE, ROMANIA, SERBIA, US, BELGIUM].includes(data.pieces[unit].nation))
                 set_delete(destinations, d)
         }
-        //only NE army could be SR into NE
-        if(is_neareast_space(d)===true &&data.pieces[unit].type===ARMY
-            && (!data.pieces[unit].neareast||game.ne_armies_placed_outside_neareast.includes(unit))){
-            set_delete(all_destinations,d)
-        }
     }
-
-
 
     // 5.7.4 - If the Allies are not at Total War, no German Armies may SR to Trent, Villach, or Trieste
     if (game.ap.commitment !== COMMITMENT_TOTAL && data.pieces[unit].nation === GERMANY && data.pieces[unit].type === ARMY) {
@@ -2143,7 +2145,7 @@ states.place_reinforcements = {
         set_delete(game.reduced, p)
         log(`${piece_name(p)}${log_corps(p)} placed in ${space_name(s)}`)
 
-        if (neareast_armies.includes(p) && data.spaces[s].map !== 'neareast' && !is_mef_space(s) && s !== SALONIKA) {
+        if (neareast_armies.includes(p) && data.spaces[s].map !== 'neareast' && !is_mef_space(s)) {
             log(`${piece_name(p)} is a NE army placed outside the Near East, it will not be able to operate on the Near East map`)
             set_add(game.ne_armies_placed_outside_neareast, p)
         }
@@ -2196,7 +2198,7 @@ function get_available_reinforcement_spaces(p) {
     }
 
     // Special placement options for French Orient Army, British NE Army, Russian CAU Army, and British MEF Army
-    if (piece_data.name === 'FR Orient' && is_space_at_war(SALONIKA) && !is_fully_stacked(SALONIKA, active_faction())) {
+    if (piece_data.name === 'FR Orient' && !is_fully_stacked(SALONIKA, active_faction())) {
         spaces.push(SALONIKA)
     } else if (piece_data.name === 'BR NE' && game.events.sinai_pipeline > 0 && !is_fully_stacked(ALEXANDRIA, active_faction())) {
         spaces.push(ALEXANDRIA)
@@ -2273,7 +2275,7 @@ function is_still_valid_attack_activation(s) {
             continue
         if (set_has(game.oos_pieces, p))
             continue
-        if (s === LONDON || get_attackable_spaces([p]).length > 0)
+        if (get_attackable_spaces([p]).length > 0)
             return true
     }
     return false
@@ -2318,9 +2320,7 @@ states.activate_spaces = {
                                 set_add(attack_spaces, s)
                         }
                     } else {
-                        // London must be exempt from this filtering based on attackable spaces, because it never has
-                        // an attackable space on its own, only in combination with units in France or Belgium.
-                        if (s === LONDON || get_attackable_spaces([p]).length > 0)
+                        if (get_attackable_spaces([p]).length > 0)
                             set_add(attack_spaces, s)
                     }
                 }
@@ -3279,24 +3279,20 @@ function goto_attack() {
         logi(`Fort (${space_name(game.attack.space)})`)
     }
 
-    if (game.events.french_mutiny > 0 && game.attack.attacker === AP && game.ap.mo === FRANCE) {
-        const french_attacking = game.attack.pieces.some((p) => data.pieces[p].nation === FRANCE)
-        const us_supporting = game.attack.pieces.some((p) => data.pieces[p].nation === US)
-        const nation = data.spaces[game.attack.space].nation
-        if (!game.awarded_fr_mutiny_vp && french_attacking && !us_supporting && (nation === FRANCE || nation === BELGIUM || nation === GERMANY)) {
-            game.vp += 1
-            record_score_event(1, FRENCH_MUTINY)
-            log(`+1 VP -- French unit attacked without US support after French Mutiny`)
-            game.awarded_fr_mutiny_vp = true
-        }
-    }
-
     const mo = active_faction() === AP ? game.ap.mo : game.cp.mo
     if (mo !== NONE && satisfies_mo(mo, game.attack.pieces, get_defenders_pieces(), game.attack.space)) {
         game[active_faction()].mo = NONE
         log(`${faction_name(game.attack.attacker)} satisfy Mandated Offensive`)
     }
-    
+
+    if (game.events.french_mutiny > 0 && game.attack.attacker === AP) {
+        const french_attacking = game.attack.pieces.some((p) => data.pieces[p].nation === FRANCE)
+        const us_supporting = game.attack.pieces.some((p) => data.pieces[p].nation === US)
+        if (french_attacking && !us_supporting) {
+            game.french_attacked_without_us_support = true // Set a flag to track this for the French Mutiny event, which will update the VP at end of turn
+        }
+    }
+
     goto_attack_step_great_retreat()
 }
 
@@ -3445,10 +3441,17 @@ function get_attackable_spaces(attackers) {
     for (let i = 0; i < attackers.length; ++i) {
         let attacker = attackers[i]
         let attackable_spaces = get_attackable_spaces_for_piece(attacker)
-        if (i === 0) // First attacker's spaces are all eligible
+        if (i === 0) { // First attacker's spaces are all eligible
             eligible_spaces.push(...attackable_spaces)
-        else // Subsequent attackers subtract ineligible spaces
-            eligible_spaces = eligible_spaces.filter((s) => attackable_spaces.includes(s))
+        } else { // Subsequent attackers subtract ineligible spaces
+            let to_remove = []
+            eligible_spaces.forEach((s) => {
+                if (!attackable_spaces.includes(s)) {
+                    to_remove.push(s)
+                }
+            })
+            to_remove.forEach((s) => { array_remove_item(eligible_spaces, s) })
+        }
     }
 
     // 15.1.3 If all the attackers are besieging a space, then they can attack the space they are besieging
@@ -3458,19 +3461,7 @@ function get_attackable_spaces(attackers) {
         if (can_besiege(siege_space, remaining_besieging_pieces))
             eligible_spaces.push(siege_space) // Sufficient besieging force is not part of the attack, so add the siege space to the eligible targets
         else
-            eligible_spaces = [siege_space] // Insufficient force remains to maintain the siege, so the only eligible target is the besieged space
-    }
-
-    // If some attackers are in a besieged space and won't leave sufficient force to maintain the siege, then they
-    // can only attack the besieged space
-    let besieged_spaces = attackers.map((p) => game.location[p]).filter((s) => is_besieged(s))
-    for (let besieged_space of besieged_spaces) {
-        const remaining_besieging_pieces = get_pieces_in_space(besieged_space).filter((p) => !attackers.includes(p))
-        if (!can_besiege(besieged_space, remaining_besieging_pieces)) {
-            // If any attacker is attacking out of a besieged space, and the remaining pieces in that space cannot
-            // maintain the siege, then remove other spaces from the eligible targets
-            eligible_spaces = eligible_spaces.filter((s) => s === besieged_space)
-        }
+            return [siege_space] // Insufficient force remains to maintain the siege, so the only eligible target is the besieged space
     }
 
     // Remove spaces that have already been attacked this action round
@@ -3978,7 +3969,7 @@ function resolve_attackers_fire() {
     }
 
     // Trench shifts
-    if (!attacking_unoccupied_fort() && !(game.attack.trenches_canceled || game.attack.trench_shift_canceled)) {
+    if (!attacking_unoccupied_fort() && !(game.attack.trenches_canceled||game.attack.trenches_shift_canceled)) {
         if (get_trench_level_for_attack(game.attack.space, other_faction(game.attack.attacker)) === 2) {
             attacker_shifts -= 2
             logi(`Trenches: shift 2L`)
@@ -4033,7 +4024,7 @@ function resolve_defenders_fire() {
     })
 
     let defender_shifts = 0
-    let trench_shift_canceled = game.attack.trenches_canceled || game.attack.trench_shift_canceled
+    let trench_shift_canceled = game.attack.trenches_canceled || !game.attack.trenches_shift_canceled
     if (get_trench_level_for_attack(game.attack.space, defender) > 0 && !trench_shift_canceled && !attacking_unoccupied_fort()) {
         defender_shifts += 1
         logi(`Trenches: shift 1R`)
@@ -4825,6 +4816,11 @@ states.defender_retreat = {
         game.attack.to_retreat = []
     },
     piece(p) {
+        if (p === MONTENEGRIN_CORPS) {
+            push_undo()
+            eliminate_piece(p)
+            return
+        }
         if (game.attack.retreating_pieces.length === 0)
             push_undo()
         set_delete(game.attack.to_retreat, p)
@@ -4906,9 +4902,6 @@ function get_retreat_options(pieces, from, spaces_to_retreat = 1) {
 
     let faction = other_faction(game.attack.attacker)
     let options = []
-
-    if (pieces.includes(MONTENEGRIN_CORPS))
-        return [] // MNC cannot retreat (also prevents play of Withdrawal)
 
     get_connected_spaces_for_pieces(from, pieces).forEach((conn) => {
         if (conn === from)
@@ -5287,9 +5280,6 @@ function cost_to_activate(space, type) {
 // === ATTRITION PHASE ===
 
 function goto_attrition_phase() {
-
-    log_h2("Attrition Phase")
-
     game.attrition = {
         ap: {
             spaces: [],
@@ -5361,7 +5351,7 @@ states.attrition_phase = {
     piece(p) {
         let loc = game.location[p]
         set_delete(game.attrition[active_faction()].pieces, p)
-        log(`Removed ${piece_name(p)} from ${space_name(game.location[p])}`)
+        log(`Removed ${piece_name(p)} from ${space_name(game.location[p])} due to attrition`)
         if (data.pieces[p].type === ARMY) {
             game.location[p] = 0
             set_add(game.removed, p)
@@ -5382,15 +5372,8 @@ states.attrition_phase = {
     },
     space(s) {
         set_delete(game.attrition[active_faction()].spaces, s)
-        log(`Flipped control of ${space_name(s)}`)
+        log(`Flipped control of ${space_name(s)} due to attrition`)
         set_control(s, other_faction(active_faction()))
-        //attrition will not set trench to 0, It will simply capture it
-        if (get_trench_level(s, active_faction()) > 0) {
-            log(`Captured trench in ${space_name(s)}`)
-            //set_trench_level(s, 0, active_faction())
-            capture_trench(s,active_faction())
-        }
-
         if (game.attrition[active_faction()].spaces.length === 0 && game.attrition[active_faction()].pieces.length === 0) {
             if (game.attrition[other_faction(active_faction())].spaces.length > 0 || game.attrition[other_faction(active_faction())].pieces.length > 0) {
                 clear_undo()
@@ -5483,7 +5466,14 @@ function goto_war_status_phase() {
         game.ap.missed_mo.push(game.turn)
         log(`+1 VP -- ${faction_name(AP)} failed to conduct their mandated offensive (${nation_name(game.ap.mo)})`)
     }
-    delete game.awarded_fr_mutiny_vp
+
+    // If French unit attacked without US support after French Mutiny, when FR MO, +1 VP
+    if (game.events.french_mutiny > 0 && game.french_attacked_without_us_support) {
+        game.vp += 1
+        record_score_event(1, FRENCH_MUTINY)
+        log(`+1 VP -- French unit attacked without US support after French Mutiny`)
+    }
+    delete game.french_attacked_without_us_support
 
     // E.4. Each player determines if his War Commitment Level has increased. This is not checked on the August 1914
     // turn (turn 1). If the appropriate War Status conditions are met, Limited War or Total War cards may be added
@@ -5512,7 +5502,7 @@ function goto_war_status_phase() {
             game.cp.commitment = COMMITMENT_TOTAL
             log_h3(`${faction_name(CP)} War Commitment Level rises to Total War`, CP)
             add_cards_to_deck(CP, COMMITMENT_TOTAL, game.cp.deck)
-            game.cp.first_total_war = true // First turn at Total War CP is not eligible for the Sedan bonus RP
+            game.cp.first_totalwar = true //in this turn cp will not gain +1rp bonus
             game.cp.shuffle = true
         }
     }
@@ -5615,16 +5605,24 @@ function apply_replacement_phase_events() {
 
     // 5.7.3 The CP receives 1 German RP each turn during Total War (i.e., after it has drawn TW cards) if it controls
     // Sedan and two additional French or Belgian spaces during the RP interphase.
-    if (game.cp.commitment === COMMITMENT_TOTAL && is_controlled_by(SEDAN, CP) && !game.cp.first_total_war) {
-        let cp_fr_be_spaces = 0
-        cp_fr_be_spaces += all_spaces_by_nation[FRANCE].filter((s => is_controlled_by(s, CP))).length
-        cp_fr_be_spaces += all_spaces_by_nation[BELGIUM].filter((s => is_controlled_by(s, CP))).length
-        if (cp_fr_be_spaces >= 3) {
-            game.rp.ge++
-            log(`${faction_name(CP)} gains 1 German RP for controlling Sedan and 2 other French/Belgian spaces`)
+    if (game.cp.commitment === COMMITMENT_TOTAL && is_controlled_by(SEDAN, CP)) {
+        if(game.cp.first_totalwar===true)
+            game.cp.first_totalwar=false
+        else {
+            let cp_controlled_french_and_belgian_spaces = 0
+            for (let s = 1; s < data.spaces.length; ++s) {
+                if (is_controlled_by(s, CP) && (data.spaces[s].nation === FRANCE || data.spaces[s].nation === BELGIUM)) {
+                    cp_controlled_french_and_belgian_spaces++
+                    if (cp_controlled_french_and_belgian_spaces >= 3) {
+                        break
+                    }
+                }
+            }
+            if (cp_controlled_french_and_belgian_spaces >= 3) {
+                game.rp.ge++
+                log(`${faction_name(CP)} gains 1 German RP for controlling Sedan and 2 other French/Belgian spaces`)
+            }
         }
-    } else {
-        delete game.cp.first_total_war
     }
 
     if (game.events.walter_rathenau > 0 && !game.events.independent_air_force) {
@@ -5811,8 +5809,8 @@ function get_replaceable_units() {
 
         if (game.location[i] === 0)
             continue
-        // If any capital been occupied, the nation cannot use rps
-        if (any_capital_occupied_or_besieged(piece_data.nation) && piece_data.nation !== SERBIA)
+        //any one capital been occupied will cause no rps
+        if (any_capitals_occupied(piece_data.nation) && piece_data.nation !== SERBIA)
             continue
 
         if (is_controlled_by(WARSAW, AP) && piece_data.name === 'PLc')
@@ -8176,8 +8174,8 @@ events.royal_tank_corps = {
     },
     apply() {
         log(`${card_name(ROYAL_TANK_CORPS)} cancels trenches`)
-        // Ignore CRT shift but not other trench effects
-        game.attack.trench_shift_canceled = true
+        //royal tank corps can only ignore crt shift
+        game.attack.trenches_shift_canceled = true
     },
     play() {
     }
